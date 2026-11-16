@@ -142,6 +142,7 @@ the sum of the preceding bytes, keeping the low 8 bits. The reply is
 | `0D` | `B2 04 0D C3` | read max HR → `D2 05 0D <bpm> cs` |
 | `10` | `B2 05 10 01 C8` | clear stored records |
 | `11` | `B2 05 11 <0/1> cs` | LED on/off |
+| `12` | `B2 04 12 C8` | read LED → `D2 05 12 <0/1> cs` |
 
 How the alarm behaves, measured with `alarm-test`:
 
@@ -151,6 +152,11 @@ How the alarm behaves, measured with `alarm-test`:
 - **Max HR does not affect the alarm.** Heartool's "beep above 90% of max HR"
   is presumably the app computing the bpm value; `alarm on --pct 90` does the
   same.
+- **The alarm takes over the buzzer.** With the alarm off, the strap beeps
+  once when it picks up a heartbeat and three times when it goes to sleep.
+  With the alarm on, those beeps are gone and only the over-threshold beeping
+  remains. The LED flashes at startup either way. You get the status beeps or
+  the alarm, not both.
 
 ### Offline sync (`FC20` notify, replies on `FC21`)
 
