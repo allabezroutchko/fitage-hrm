@@ -53,7 +53,7 @@ A=CE:42:4F:EE:DE:A8                                     # your strap
 `--fit` it also writes one `fitage_YYYYMMDD_HHMM.fit` workout per recording.
 Recordings are split at gaps of more than 5 minutes. Sport choices are
 `cardio` (the default), `running`, `cycling`, `indoor_cycling`, `treadmill`,
-`walking`, `hiking`, `training`, `strength`, `hiit`, `rowing` and `generic`.
+`walking`, `hiking`, `training`, `strength`, `hiit`, `rowing`, `boxing` and `generic`.
 
 Other options:
 

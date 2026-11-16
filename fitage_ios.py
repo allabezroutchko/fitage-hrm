@@ -21,7 +21,7 @@ import console
 
 import fitage_core as fc
 
-SPORT = "cardio"            # default sport if no argument is given
+SPORT = "boxing"            # default sport if no argument is given
 CLEAR_AFTER_SYNC = False    # erase records on the strap after a clean sync
 NAME_PREFIX = "FITAGE"
 OUT_DIR = os.path.expanduser("~/Documents/FITAGE")   # "On My iPhone > Pythonista 3 > FITAGE"

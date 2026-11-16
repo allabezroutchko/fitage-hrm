@@ -169,6 +169,7 @@ SPORTS = {  # name -> (sport, sub_sport) per FIT profile
     "strength": (10, 20),
     "hiit": (62, 0),
     "rowing": (15, 0),
+    "boxing": (47, 0),
 }
 
 _CRC_TABLE = [0x0000, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401,
