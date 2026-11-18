@@ -10,14 +10,16 @@ fitage_core.py). Default below.
 Make sure no other device (PC/blueman, Heartool) is connected to the strap:
 it accepts only one connection and stops advertising while connected.
 """
+import ctypes
 import os
 import queue
 import sys
 import threading
 import time
+import traceback
 
-import cb
 import console
+from objc_util import ObjCClass, ObjCInstance, create_objc_class, on_main_thread
 
 import fitage_core as fc
 
@@ -29,7 +31,17 @@ SCAN_TIMEOUT = 20
 IDLE_TIMEOUT = 15
 DEBUG = False
 
+# Pythonista's own `cb` module can't write to a characteristic on Pythonista
+# 3.4 (SystemError "PY_SSIZE_T_CLEAN macro must be defined for '#' formats",
+# github.com/omz/pythonista-issues/issues/699), so this script talks to
+# Apple's CoreBluetooth directly through objc_util.
+CBCentralManager = ObjCClass("CBCentralManager")
+NSData = ObjCClass("NSData")
+STATE_POWERED_ON = 5
+WRITE_WITHOUT_RESPONSE = 1   # FC21 / FD0A only support write-without-response
 BASE_SUFFIX = "-0000-1000-8000-00805F9B34FB"
+
+STRAP = None   # the Strap instance the ObjC delegate forwards to
 
 
 def short_uuid(u):
@@ -39,15 +51,95 @@ def short_uuid(u):
     return u
 
 
+def uuid_of(obj):
+    return short_uuid(obj.UUID().UUIDString())
+
+
+def to_bytes(nsdata):
+    if nsdata is None:
+        return None
+    n = nsdata.length()
+    return ctypes.string_at(nsdata.bytes(), n) if n else b""
+
+
+def to_nsdata(data):
+    data = bytes(data)
+    buf = ctypes.create_string_buffer(data, len(data))
+    return NSData.dataWithBytes_length_(buf, len(data))
+
+
 def log(*a):
     if DEBUG:
         print("[debug]", *a)
 
 
+def _call(name, *args):
+    """Forward an ObjC delegate callback to STRAP.<name>; never let an
+    exception escape into ObjC (that would crash Pythonista)."""
+    try:
+        if STRAP is not None:
+            getattr(STRAP, name)(*[None if a is None else ObjCInstance(a) for a in args])
+    except Exception:
+        traceback.print_exc()
+
+
+# --- ObjC delegate methods (CBCentralManagerDelegate + CBPeripheralDelegate) ---
+def centralManagerDidUpdateState_(_self, _cmd, central):
+    _call("on_state", central)
+
+
+def centralManager_didDiscoverPeripheral_advertisementData_RSSI_(_self, _cmd, central, p, adv, rssi):
+    _call("on_discover", p)
+
+
+def centralManager_didConnectPeripheral_(_self, _cmd, central, p):
+    _call("on_connect", p)
+
+
+def centralManager_didFailToConnectPeripheral_error_(_self, _cmd, central, p, error):
+    _call("on_disconnect", p, error)
+
+
+def centralManager_didDisconnectPeripheral_error_(_self, _cmd, central, p, error):
+    _call("on_disconnect", p, error)
+
+
+def peripheral_didDiscoverServices_(_self, _cmd, p, error):
+    _call("on_services", p)
+
+
+def peripheral_didDiscoverCharacteristicsForService_error_(_self, _cmd, p, service, error):
+    _call("on_characteristics", service)
+
+
+def peripheral_didUpdateValueForCharacteristic_error_(_self, _cmd, p, c, error):
+    _call("on_value", c)
+
+
+def make_delegate():
+    # A fresh class name per run: re-running the script in the same Pythonista
+    # session must not reuse a class bound to the previous run's functions.
+    cls = create_objc_class(
+        "FitageBLEDelegate%d" % int(time.time() * 1000),
+        methods=[centralManagerDidUpdateState_,
+                 centralManager_didDiscoverPeripheral_advertisementData_RSSI_,
+                 centralManager_didConnectPeripheral_,
+                 centralManager_didFailToConnectPeripheral_error_,
+                 centralManager_didDisconnectPeripheral_error_,
+                 peripheral_didDiscoverServices_,
+                 peripheral_didDiscoverCharacteristicsForService_error_,
+                 peripheral_didUpdateValueForCharacteristic_error_],
+        protocols=["CBCentralManagerDelegate", "CBPeripheralDelegate"])
+    return cls.alloc().init()
+
+
 class Strap(object):
     def __init__(self):
+        self.central = None
+        self.delegate = None
         self.peripheral = None
         self.chars = {}
+        self.powered = threading.Event()
         self.ready = threading.Event()
         self.disconnected = threading.Event()
         self.parser = fc.SyncParser(log=log)
@@ -55,61 +147,99 @@ class Strap(object):
         self.replies = queue.Queue()
         self.last_rx = time.time()
 
-    # --- cb central delegate ---
-    def did_discover_peripheral(self, p):
-        if self.peripheral is None and p.name and p.name.upper().startswith(NAME_PREFIX):
-            print("Found %s, connecting..." % p.name)
-            self.peripheral = p
-            cb.stop_scan()
-            cb.connect_peripheral(p)
+    # --- callbacks (run on the main thread) ---
+    def on_state(self, central):
+        state = central.state()
+        log("central state", state)
+        if state == STATE_POWERED_ON:
+            self.powered.set()
 
-    def did_connect_peripheral(self, p):
-        p.discover_services()
+    def on_discover(self, p):
+        name = p.name()
+        name = str(name) if name is not None else ""
+        if self.peripheral is None and name.upper().startswith(NAME_PREFIX):
+            print("Found %s, connecting..." % name)
+            self.peripheral = p           # keep a reference, or iOS drops it
+            p.setDelegate_(self.delegate)
+            self.central.stopScan()
+            self.central.connectPeripheral_options_(p, None)
 
-    def did_fail_to_connect_peripheral(self, p, error):
-        print("Connection failed:", error)
-        self.disconnected.set()
+    def on_connect(self, p):
+        p.discoverServices_(None)
 
-    def did_disconnect_peripheral(self, p, error):
+    def on_disconnect(self, p, error):
         log("disconnected", error)
         self.disconnected.set()
 
-    def did_discover_services(self, p, error):
-        for s in p.services:
-            if short_uuid(s.uuid) in (fc.SVC_SYNC, fc.SVC_CMD):
-                p.discover_characteristics(s)
+    def on_services(self, p):
+        for s in p.services() or []:
+            if uuid_of(s) in (fc.SVC_SYNC, fc.SVC_CMD):
+                p.discoverCharacteristics_forService_(None, s)
 
-    def did_discover_characteristics(self, s, error):
-        for c in s.characteristics:
-            self.chars[short_uuid(c.uuid)] = c
+    def on_characteristics(self, s):
+        for c in s.characteristics() or []:
+            self.chars[uuid_of(c)] = c
         if all(k in self.chars for k in (fc.SYNC_NOTIFY, fc.SYNC_WRITE, fc.CMD_NOTIFY, fc.CMD_WRITE)):
             self.ready.set()
 
-    def did_update_value(self, c, error):
-        u = short_uuid(c.uuid)
-        if c.value is None:
+    def on_value(self, c):
+        data = to_bytes(c.value())
+        if data is None:
             return
+        u = uuid_of(c)
         if u == fc.SYNC_NOTIFY:
             self.last_rx = time.time()
-            for r in self.parser.feed(c.value):
+            for r in self.parser.feed(data):
                 self.outq.put(r)
         elif u == fc.CMD_NOTIFY:
-            log("FD09 <-", bytes(c.value).hex())
-            self.replies.put(bytes(c.value))
+            log("FD09 <-", data.hex())
+            self.replies.put(data)
 
-    def did_write_value(self, c, error):
-        if error:
-            print("write error:", error)
+    # --- actions (called from the script thread) ---
+    @on_main_thread
+    def _start(self):
+        self.delegate = make_delegate()
+        self.central = CBCentralManager.alloc().initWithDelegate_queue_(self.delegate, None)
 
-    # --- actions (main thread) ---
+    def start(self):
+        global STRAP
+        STRAP = self
+        self._start()
+        return self.powered.wait(5)
+
+    @on_main_thread
+    def scan(self):
+        self.central.scanForPeripheralsWithServices_options_(None, None)
+
+    @on_main_thread
     def write(self, uuid, data):
-        # FC21 / FD0A only support write-without-response
-        self.peripheral.write_characteristic_value(self.chars[uuid], data, False)
+        self.peripheral.writeValue_forCharacteristic_type_(
+            to_nsdata(data), self.chars[uuid], WRITE_WITHOUT_RESPONSE)
+
+    @on_main_thread
+    def notify(self, uuid):
+        self.peripheral.setNotifyValue_forCharacteristic_(True, self.chars[uuid])
+
+    @on_main_thread
+    def _stop(self):
+        try:
+            self.central.stopScan()
+            if self.peripheral is not None:
+                self.central.cancelPeripheralConnection_(self.peripheral)
+        finally:
+            if self.peripheral is not None:
+                self.peripheral.setDelegate_(None)
+            self.central.setDelegate_(None)
+
+    def stop(self):
+        global STRAP
+        if self.central is not None:
+            self._stop()
+        STRAP = None
 
     def sync(self):
-        p = self.peripheral
-        p.set_notify_value(self.chars[fc.CMD_NOTIFY], True)
-        p.set_notify_value(self.chars[fc.SYNC_NOTIFY], True)
+        self.notify(fc.CMD_NOTIFY)
+        self.notify(fc.SYNC_NOTIFY)
         self.last_rx = time.time()
         while not self.parser.done and not self.disconnected.is_set():
             try:
@@ -144,10 +274,13 @@ def main():
         sport = SPORT
 
     strap = Strap()
-    cb.set_central_delegate(strap)
-    print("Scanning for %s strap (wear it so it wakes up)..." % NAME_PREFIX)
-    cb.scan_for_peripherals()
     try:
+        if not strap.start():
+            print("Bluetooth is off, or Pythonista isn't allowed to use it "
+                  "(Settings > Privacy > Bluetooth).")
+            return
+        print("Scanning for %s strap (wear it so it wakes up)..." % NAME_PREFIX)
+        strap.scan()
         if not strap.ready.wait(SCAN_TIMEOUT):
             console.hud_alert("Strap not found", "error", 2)
             print("Strap not found / not connectable. Is it worn, and not connected to another device?")
@@ -165,11 +298,7 @@ def main():
             else:
                 print("Not clearing (sync incomplete or empty).")
     finally:
-        try:
-            if strap.peripheral is not None:
-                cb.cancel_peripheral_connection(strap.peripheral)
-        finally:
-            cb.reset()
+        strap.stop()
 
     sessions = fc.split_sessions(p.hr)
     print("%d HR samples -> %d workout(s)" % (len(p.hr), len(sessions)))

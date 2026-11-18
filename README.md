@@ -93,9 +93,12 @@ to Apple Health.
 Files are kept in *On My iPhone → Pythonista 3 → FITAGE*. You can change the
 settings at the top of the script: `SPORT`, `NAME_PREFIX`, `OUT_DIR`, `DEBUG`.
 
-> The iOS Bluetooth code follows Pythonista's documented `cb` API but was
-> written without access to a device. If something fails, set `DEBUG = True`
-> and look at the console output.
+> The script calls Apple's CoreBluetooth directly through `objc_util`.
+> Pythonista's own `cb` module can't write to a characteristic on
+> Pythonista 3.4: every write fails with `SystemError: PY_SSIZE_T_CLEAN macro
+> must be defined for '#' formats`
+> ([pythonista-issues#699](https://github.com/omz/pythonista-issues/issues/699)).
+> If something fails, set `DEBUG = True` and look at the console output.
 
 ## ⚠️ Syncing deletes the data from the strap
 
