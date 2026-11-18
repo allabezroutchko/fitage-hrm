@@ -7,7 +7,7 @@ The strap's extra features normally require Heartool. These scripts talk to the
 strap directly over Bluetooth Low Energy instead:
 
 - set the over-limit **alarm** (the strap beeps while your HR is above a threshold)
-- set the stored **max HR**
+- set the stored **max HR** (used by the strap to calculate the heart rate zones to change the LED color depending on the heart rate zone you are in)
 - **download the heart rate recorded while offline** to CSV and `.fit` workout files
 - read battery and firmware info, stream live HR
 
@@ -21,7 +21,8 @@ There are two front ends sharing one core:
 
 Tested with a strap named `FITAGE-2003368`, firmware V1.1.2, hardware V1.0.0.
 The strap is made by Onecoder (Shenzhen), so other Onecoder heart rate straps
-using the same "FitBleKit" SDK may work too.
+using the same "FitBleKit" SDK may work too. It seems that Fitage HRM has the 
+same chipset and features as Coospo H9Z, so the scripts may work for that one as well. 
 
 ## Linux
 
@@ -34,7 +35,7 @@ python3 -m venv .venv
 
 You need a Bluetooth adapter. Wear the strap: it only wakes up with skin contact.
 
-### Usage
+### Usage on Linux
 
 ```sh
 .venv/bin/python fitage_hrm.py scan                     # find the strap's address
@@ -86,7 +87,7 @@ to Apple Health.
 2. Create a Shortcut with the action **Pythonista → Run Script**:
    - Script: `fitage_ios.py`
    - **Run in Pythonista: ON** (Bluetooth and the share sheet need the app)
-   - Optional argument: a sport name, e.g. `cycling` (default `cardio`)
+   - Optional argument: a sport name, e.g. `cycling` (default `boxing`)
 3. Make sure nothing else (the PC, Heartool) is connected to the strap. Run the
    Shortcut, then choose **HealthFit** in the share sheet.
 
